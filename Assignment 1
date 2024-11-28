@@ -1,0 +1,137 @@
+CREATE DATABASE RetailAnalyticsDB
+
+USE RetailAnalyticsDB
+
+
+-- Customer Table
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    customer_name VARCHAR(255),
+    region VARCHAR(50),
+    join_date DATE
+);
+
+
+-- Sales Table
+CREATE TABLE sales (
+    sale_id INT PRIMARY KEY,
+    product_id VARCHAR(50),
+    sale_amount DECIMAL(10, 2),
+    sale_date DATE,
+    customer_id INT REFERENCES customers(customer_id)
+);
+
+
+-- Transactions Table
+CREATE TABLE transactions (
+    transaction_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    transaction_date DATE,
+    transaction_amount DECIMAL(10, 2)
+);
+
+SELECT * FROM transactions
+SELECT * FROM customers
+SELECT * FROM sales
+
+
+-- 1. Customer and Sales Performance Analysis
+
+/* 
+Business Scenario: You are a business analyst for a retail company. You have multiple datasets: one for customer details, one for product sales, and one for customer transactions. You need to analyze customer behavior and sales performance over time.
+
+Window Functions: ROW_NUMBER(), RANK(), DENSE_RANK(), LAG(), LEAD()
+
+
+Assignment Problem:
+  Task 1: Rank customers based on their total purchase amount per year. Identify the top 5 customers each year and track their ranking over time. (Use RANK())
+*/
+
+SELECT * FROM 
+( SELECT
+  t.transaction_id AS transaction_id,
+  c.customer_name AS customer_name,
+  YEAR(t.transaction_date) AS transaction_year,
+  SUM(t.transaction_amount) AS total_transaction_amt,
+  RANK() OVER (PARTITION BY YEAR(t.transaction_date) ORDER BY SUM(t.transaction_amount) DESC) AS customer_ranking
+FROM  customers c
+INNER JOIN transactions t
+  ON c.customer_id = t.customer_id
+GROUP BY t.transaction_id, c.customer_name, YEAR(t.transaction_date)
+) AS customer_data
+WHERE customer_ranking <= 5;
+
+
+--Task 2: For each customer, get their previous transaction amount and compare it with their current one. (Use LAG())
+
+WITH transaction_data AS (
+    SELECT
+      customer_id,
+      transaction_id,
+      transaction_amount,
+      LAG(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_id) AS previous_transactions
+    FROM transactions
+) 
+    SELECT
+      customer_id,
+      transaction_id,
+      transaction_amount AS current_transactions,
+      previous_transactions,
+      (current_transactions - previous_transactions) AS difference
+    FROM
+      transaction_data;
+
+
+-- Task 3: Calculate the running total of sales for each customer in the last 3 years. (Use SUM() OVER)
+
+
+WITH filtered_sales AS (
+    SELECT
+      customer_id,
+      sale_id,
+      sale_date,
+      sale_amount,
+      YEAR(sale_date) AS sales_year
+    FROM sales
+    WHERE sale_date >= DATEADD(YEAR, -3, CURRENT_DATE)
+)
+    SELECT
+      customer_id,
+      sale_date,
+      sales_year,
+      SUM(sale_amount) OVER (PARTITION BY customer_id ORDER BY sale_date) AS running_total_sales
+    FROM 
+      filtered_sales
+    ORDER BY sales_year, customer_id, sale_date;
+
+
+
+-- Task 4: Divide customers into quartiles based on their total sales per year and analyze their spending patterns. (Use NTILE())
+
+
+WITH yearly_sales AS (
+    SELECT
+        customer_id,
+        YEAR(sale_date) AS sales_year,
+        SUM(sale_amount) AS total_sales_per_year
+    FROM sales
+    GROUP BY customer_id, YEAR(sale_date)
+),
+quartiles AS (
+    SELECT
+        customer_id,
+        sales_year,
+        total_sales_per_year,
+        NTILE(4) OVER (
+            PARTITION BY sales_year 
+            ORDER BY total_sales_per_year DESC
+        ) AS sales_quartile
+    FROM yearly_sales
+)
+SELECT
+    customer_id,
+    sales_year,
+    total_sales_per_year,
+    sales_quartile
+FROM quartiles
+ORDER BY sales_year, sales_quartile, total_sales_per_year DESC;
