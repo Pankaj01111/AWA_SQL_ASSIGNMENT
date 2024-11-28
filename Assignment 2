@@ -1,0 +1,119 @@
+CREATE DATABASE employeeDB
+
+USE employeeDB
+
+/*
+
+2. Employee Performance Evaluation
+•	Business Scenario: You are responsible for evaluating the performance of employees over time for a multinational company. You have datasets for employee details, their monthly evaluations, and their department transfers. You need to track their performance and career progression.
+•	Window Functions: ROW_NUMBER(), DENSE_RANK(), FIRST_VALUE(), LAST_VALUE()
+
+Tables:
+•	employees (Employee Information)
+•	evaluations (Monthly Employee Evaluation Scores)
+•	departments (Department Transfer History)
+
+*/
+
+---DDL For Tables:
+
+-- Employees Table
+CREATE TABLE employees (
+    employee_id INT PRIMARY KEY,
+    employee_name VARCHAR(255),
+    hire_date DATE,
+    current_department VARCHAR(100)
+);
+
+-- Evaluations Table
+CREATE TABLE evaluations (
+    evaluation_id INT PRIMARY KEY,
+    employee_id INT REFERENCES employees(employee_id),
+    evaluation_month DATE,
+    evaluation_score DECIMAL(5, 2)
+);
+
+-- Departments Table
+CREATE TABLE departments (
+    department_id INT PRIMARY KEY,
+    department_name VARCHAR(100),
+    employee_id INT REFERENCES employees(employee_id),
+    transfer_date DATE
+);
+
+
+--Assignment Problem:
+--Task 1: Track the rank of employees in terms of monthly evaluation scores within each department for the last 3 years. (Use DENSE_RANK())
+
+WITH employee_evaluation AS (
+SELECT
+  e.employee_id,
+  e.employee_name,
+  d.department_id,
+  d.department_name,
+  v.evaluation_score,
+  YEAR(v.evaluation_month) AS evaluation_year
+FROM employees e
+INNER JOIN evaluations v
+  ON e.employee_id = v.employee_id
+INNER JOIN departments d
+  ON e.employee_id = d.employee_id
+WHERE v.evaluation_month >= DATEADD(YEAR, -3, CURRENT_DATE) 
+)
+SELECT *,
+  DENSE_RANK() OVER (PARTITION BY ee.department_name, ee.evaluation_year ORDER BY ee.evaluation_score DESC) AS employee_rank
+FROM 
+  employee_evaluation ee
+  
+
+--Task 2: Identify employees whose performance improved consistently over the last 6 months by comparing their current evaluation with their previous ones. (Use LAG())
+
+
+WITH employee_evaluation AS (
+SELECT
+  e.employee_id,
+  e.employee_name,
+  v.evaluation_score AS current_employee_eval_score,
+  MONTH(v.evaluation_month) AS evaluation_monthh
+FROM employees e
+INNER JOIN evaluations v
+  ON e.employee_id = v.employee_id
+WHERE v.evaluation_month >= DATEADD(MONTH, -6, CURRENT_DATE) 
+)
+    SELECT *,
+      (current_employee_eval_score - previous_employee_eval_score ) AS preformance
+    FROM
+(
+    SELECT *,
+      LAG(current_employee_eval_score) OVER (PARTITION BY ee.employee_id ORDER BY ee.evaluation_monthh DESC) AS previous_employee_eval_score
+    FROM 
+      employee_evaluation ee
+)
+       AS employee_score;
+
+
+-- Task 3: Find the first department each employee joined and their current department. (Use FIRST_VALUE(), LAST_VALUE())
+
+SELECT
+    e.employee_id,
+    e.employee_name,
+    FIRST_VALUE(d.department_name) OVER (PARTITION BY e.employee_id ORDER BY d.transfer_date) AS first_department,
+    LAST_VALUE(d.department_name) OVER (PARTITION BY e.employee_id ORDER BY d.transfer_date ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS current_department,
+    FIRST_VALUE(d.transfer_date) OVER (PARTITION BY e.employee_id ORDER BY d.transfer_date) AS first_transfer_date,
+    d.transfer_date AS last_transfer_date
+FROM employees e
+INNER JOIN departments d
+    ON e.employee_id = d.employee_id;
+
+    
+--Task 4: Calculate the cumulative average evaluation score of each employee over the years. (Use AVG() OVER)
+
+SELECT
+  e.employee_id,
+  e.employee_name,
+  YEAR(v.evaluation_month) AS evaluation_year,
+  avg(v.evaluation_score) OVER (PARTITION BY e.employee_id ORDER BY YEAR(v.evaluation_month) ) AS avg_eval_score
+FROM employees e
+INNER JOIN evaluations v
+  ON e.employee_id = v.employee_id;
+
