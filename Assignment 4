@@ -1,0 +1,156 @@
+CREATE DATABASE finance_monitor
+
+USE finance_monitor
+
+/*
+4. Financial Transaction Monitoring
+•	Business Scenario: You are working for a bank, and you need to monitor large-scale transactions for suspicious activities. You have datasets for customer details, account transactions, and suspicious activities flagged by the system. The goal is to track financial behavior over time and detect irregularities.
+•	Window Functions: SUM() OVER, NTILE(), FIRST_VALUE(), LAST_VALUE()
+
+Tables:
+•	customers (Bank Customer Information)
+•	accounts (Bank Accounts)
+•	transactions (Transaction Data)
+•	suspicious_activities (Flagged Suspicious Activities)
+*/
+
+-- DDL for Tables:
+
+-- Customers Table
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    customer_name VARCHAR(255),
+    region VARCHAR(100),
+    join_date DATE
+);
+
+-- Accounts Table
+CREATE TABLE accounts (
+    account_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    account_type VARCHAR(100),
+    balance DECIMAL(15, 2),
+    opened_date DATE
+);
+
+-- Transactions Table
+CREATE TABLE transactions (
+    transaction_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    transaction_date DATE,
+    transaction_amount DECIMAL(15, 2)
+);
+
+
+-- Suspicious Activities Table
+CREATE TABLE suspicious_activities (
+    activity_id INT PRIMARY KEY,
+    transaction_id INT REFERENCES transactions(transaction_id),
+    flagged_reason VARCHAR(255),
+    flagged_date DATE
+);
+
+
+-- Task 1: Calculate the cumulative sum of transactions for each customer in the last 2 years and flag customers whose transactions exceed a threshold. (Use SUM() OVER)
+
+WITH transaction_data AS (
+SELECT
+  customer_id,
+  transaction_id,
+  YEAR(transaction_date) AS transaction_year,
+  transaction_amount
+FROM
+  transactions
+WHERE transaction_date >= DATEADD(YEAR, -2, CURRENT_DATE)
+),
+flag_filter AS (
+   SELECT DISTINCT
+      customer_id,
+      transaction_year,
+      SUM(transaction_amount) OVER (PARTITION BY customer_id) AS total_transaction
+    FROM transaction_data
+    ORDER BY customer_id,transaction_year,total_transaction
+)
+SELECT 
+  customer_id,
+  transaction_year,
+  total_transaction,
+  CASE 
+    WHEN total_transaction > 3000 THEN 'red flag'
+    ELSE 'ok'
+  END AS threshold_transaction
+FROM
+  flag_filter
+ORDER BY customer_id, transaction_year;
+
+
+
+-- Task 2: Divide customers into deciles (10 groups) based on their total transactions and analyze which decile is most prone to suspicious activity. (Use NTILE())
+
+WITH CustomerTransactionTotals AS (
+    SELECT
+        t.customer_id,
+        SUM(t.transaction_amount) AS total_transaction_amount
+    FROM transactions t
+    GROUP BY t.customer_id
+),
+CustomerDeciles AS (
+    SELECT
+        customer_id,
+        total_transaction_amount,
+        NTILE(10) OVER (ORDER BY total_transaction_amount DESC) AS decile
+    FROM CustomerTransactionTotals
+)
+SELECT
+    cd.decile,
+    COUNT(sa.activity_id) AS suspicious_activity_count
+FROM CustomerDeciles cd
+LEFT JOIN transactions t
+    ON cd.customer_id = t.customer_id
+LEFT JOIN suspicious_activities sa
+    ON t.transaction_id = sa.transaction_id
+GROUP BY cd.decile
+ORDER BY cd.decile;
+
+
+
+-- Task 3: Track the first and last large transaction for each customer in the past 4 years. (Use FIRST_VALUE(), LAST_VALUE())
+
+WITH customer_transaction AS (
+SELECT
+  customer_id,
+  transaction_id,
+  transaction_amount,
+  YEAR(transaction_date) AS transaction_year
+FROM
+  transactions
+WHERE transaction_date >= DATEADD(YEAR, -4, CURRENT_DATE)
+)
+SELECT
+  customer_id,
+  transaction_id,
+  transaction_amount,
+  transaction_year,
+  first_value(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_amount DESC) AS first_large_transaction,
+  last_value(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_amount DESC) AS last_large_transaction
+FROM
+  customer_transaction
+ORDER BY customer_id, transaction_amount DESC;
+
+
+-- Task 4: Compare each customer’s current transaction with their previous one to detect sudden increases in transaction amounts. (Use LAG())
+
+SELECT *, 
+  (current_transaction - previous_transaction) As increase_transaction_amt
+FROM
+(
+   SELECT
+     customer_id,
+     transaction_id,
+     transaction_amount AS current_transaction,
+     LAG(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_id) AS previous_transaction
+   FROM
+     transactions
+) 
+AS transaction_flaucation;
+  
