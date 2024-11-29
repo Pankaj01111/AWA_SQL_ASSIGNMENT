@@ -1,0 +1,109 @@
+CREATE DATABASE RETAILANALYTICS_DB 
+
+USE DATABASE RETAILANALYTICS_DB;
+USE SCHEMA PUBLIC;
+
+
+-- 1. Customer and Sales Performance Analysis
+
+/* 
+Business Scenario: You are a business analyst for a retail company. You have multiple datasets: one for customer details, one for product sales, and one for customer transactions. You need to analyze customer behavior and sales performance over time.
+
+Window Functions: ROW_NUMBER(), RANK(), DENSE_RANK(), LAG(), LEAD()
+*/
+
+-- Customer Table
+CREATE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    customer_name VARCHAR(255),
+    region VARCHAR(50),
+    join_date DATE
+);
+
+
+-- Sales Table
+CREATE TABLE sales (
+    sale_id INT PRIMARY KEY,
+    product_id VARCHAR(50),
+    sale_amount DECIMAL(10, 2),
+    sale_date DATE,
+    customer_id INT REFERENCES customers(customer_id)
+);
+
+
+-- Transactions Table
+CREATE TABLE transactions (
+    transaction_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    transaction_date DATE,
+    transaction_amount DECIMAL(10, 2)
+);
+
+SELECT * FROM transactions
+SELECT * FROM customers
+SELECT * FROM sales
+
+
+create or replace file format retail_csv
+    type = 'csv'
+    compression = 'none'
+    field_delimiter = ','
+    field_optionally_enclosed_by = 'none'
+    skip_header = 1;
+
+CREATE OR REPLACE STORAGE integration retail_int
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = S3
+ENABLED = TRUE
+STORAGE_AWS_ROLE_ARN ='arn:aws:iam::588738594772:role/customer-sales-role'
+STORAGE_ALLOWED_LOCATIONS =('s3://customer-and-sales-performance-analysis/');
+
+DESC integration retail_int;
+
+
+CREATE OR REPLACE STAGE RETAIL_STAGE
+URL ='s3://customer-and-sales-performance-analysis'
+file_format = retail_csv
+storage_integration = retail_int;
+
+LIST @RETAIL_STAGE;
+
+SHOW STAGES;
+
+--CREATE SNOWPIPE THAT RECOGNISES CSV THAT ARE INGESTED FROM EXTERNAL STAGE AND COPIES THE DATA INTO EXISTING TABLE
+
+--The AUTO_INGEST=true parameter specifies to read 
+--- event notifications sent from an S3 bucket to an SQS queue when new data is ready to load.
+
+
+CREATE OR REPLACE PIPE RETAIL_SNOWPIPE_CUSTOMERS AUTO_INGEST = TRUE AS
+COPY INTO RetailAnalytics_DB.PUBLIC.customers --yourdatabase -- your schema ---your table
+FROM '@RETAIL_STAGE/customers/' --s3 bucket subfolde4r name
+FILE_FORMAT = retail_csv;
+
+CREATE OR REPLACE PIPE RETAIL_SNOWPIPE_SALES AUTO_INGEST = TRUE AS
+COPY INTO RetailAnalytics_DB.PUBLIC.sales --yourdatabase -- your schema ---your table
+FROM '@RETAIL_STAGE/sales/' --s3 bucket subfolde4r name
+FILE_FORMAT = retail_csv;
+
+CREATE OR REPLACE PIPE RETAIL_SNOWPIPE_TRANSACTION AUTO_INGEST = TRUE AS
+COPY INTO RetailAnalytics_DB.PUBLIC.transactions --yourdatabase -- your schema ---your table
+FROM '@RETAIL_STAGE/transactions/' --s3 bucket subfolde4r name
+FILE_FORMAT = retail_csv;
+
+
+transactions /
+sales/
+SHOW PIPES
+
+SELECT count(*) FROM customers;
+SELECT count(*) FROM sales;
+
+
+
+ALTER PIPE RETAIL_SNOWPIPE_CUSTOMERS refresh;
+ALTER PIPE RETAIL_SNOWPIPE_SALES refresh;
+ALTER PIPE RETAIL_SNOWPIPE_TRANSACTION refresh;
+
+SELECT * FROM CUSTOMERS;
+SELECT * FROM sales;
