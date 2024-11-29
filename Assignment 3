@@ -1,0 +1,123 @@
+CREATE DATABASE trends_DB
+
+USE trends_DB
+
+
+/*
+3. Product Pricing and Sales Trends
+
+
+•	Business Scenario: You are tasked with analyzing product pricing trends and their impact on sales. You have datasets for product prices, sales transactions, and promotions. The company wants to understand how price changes and promotions affect product sales.
+•	Window Functions: LEAD(), LAG(), SUM() OVER, MAX() OVER
+
+Tables:
+•	products (Product Information)
+•	prices (Product Pricing History)
+•	promotions (Promotional Events)
+•	sales (Sales Transactions Data)
+*/
+
+
+--DDL For Tables:
+
+-- Products Table
+CREATE TABLE products (
+    product_id VARCHAR(50) PRIMARY KEY,
+    product_name VARCHAR(255),
+    category VARCHAR(100)
+);
+
+-- Prices Table
+CREATE TABLE prices (
+    price_id INT PRIMARY KEY,
+    product_id VARCHAR(50) REFERENCES products(product_id),
+    price DECIMAL(10, 2),
+    price_date DATE
+);
+
+-- Promotions Table
+CREATE TABLE promotions (
+    promotion_id INT PRIMARY KEY,
+    product_id VARCHAR(50) REFERENCES products(product_id),
+    discount DECIMAL(5, 2),
+    start_date DATE,
+    end_date DATE
+);
+
+-- Sales Table
+CREATE TABLE sales (
+    sale_id INT PRIMARY KEY,
+    product_id VARCHAR(50) REFERENCES products(product_id),
+    sale_date DATE,
+    total_amount DECIMAL(10, 2)
+);
+
+
+--Assignment Problem:
+-- Task 1: For each product, compare the current price with the previous price and the next price, and analyze how price changes affect sales. (Use LAG(), LEAD())
+
+
+SELECT
+    p.product_id,
+    p.price_id,
+    p.price_date,
+    p.price AS current_price,
+    LAG(p.price) OVER (PARTITION BY p.product_id ORDER BY p.price_date) AS previous_price,
+    LEAD(p.price) OVER (PARTITION BY p.product_id ORDER BY p.price_date) AS next_price,
+    s.sale_date,
+    s.total_amount AS current_sale_price,
+    LAG(s.total_amount) OVER (PARTITION BY s.product_id ORDER BY s.sale_date) AS previous_sale_price,
+    LEAD(s.total_amount) OVER (PARTITION BY s.product_id ORDER BY s.sale_date) AS next_sale_price
+FROM prices p
+LEFT JOIN sales s
+    ON p.product_id = s.product_id;
+
+
+-- Task 2: Calculate the cumulative sales for each product per month over the last 2 years. (Use SUM() OVER)
+
+WITH sales_data AS (
+SELECT
+  product_id,
+  EXTRACT(YEAR FROM sale_date) AS sale_year,
+  EXTRACT(MONTH FROM sale_date) AS sale_month,
+  total_amount
+FROM
+  sales
+WHERE sale_date >= DATEADD(YEAR, -2, CURRENT_DATE)
+)
+  SELECT 
+    product_id,
+    sale_year,
+    sale_month,
+    SUM(total_amount) OVER (PARTITION BY product_id ORDER BY sale_year,sale_month) AS total_sales
+  FROM 
+    sales_data
+  ORDER BY product_id, sale_year, sale_month;
+
+
+
+-- Task 3: Find the maximum price each product has ever been sold at and compare it to the current price. (Use MAX() OVER)
+
+
+SELECT
+    product_id,
+    total_amount AS current_sale_price,
+    MAX(total_amount) OVER (PARTITION BY product_id) AS max_sale_price
+FROM sales;
+
+
+-- Task 4: Identify products that had promotional discounts and track their sales before, during, and after the promotion. (Use LAG(), LEAD())
+
+
+SELECT *,
+  (sales_before_disc - discount) AS sales_after_disc
+FROM (
+    SELECT
+      p.product_id,
+      s.total_amount AS sales_before_disc,
+      p.discount AS discount
+    FROM promotions p
+    INNER JOIN sales s
+      ON p.product_id = s.product_id
+   ) 
+    AS discount_data;
