@@ -1,0 +1,707 @@
+CREATE DATABASE Data_Insights
+CREATE SCHEMA analysis
+USE DATA_INSIGHTS.ANALYSIS
+
+
+CREATE OR REPLACE TABLE customers (
+    customer_id INT PRIMARY KEY,
+    customer_name VARCHAR(255),
+    region VARCHAR(50),
+    join_date DATE
+);
+-- Sales Table
+CREATE OR REPLACE TABLE sales (
+    sale_id INT PRIMARY KEY,
+    product_id VARCHAR(50),
+    sale_amount DECIMAL(10, 2),
+    sale_date DATE,
+    customer_id INT REFERENCES customers(customer_id)
+);
+
+ 
+-- Transactions Table
+CREATE OR REPLACE TABLE transactions (
+    transaction_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    transaction_date DATE,
+    transaction_amount DECIMAL(10, 2)
+);
+
+create or replace file format data_csv
+    type = 'csv'
+    compression = 'none'
+    field_delimiter = ','
+    field_optionally_enclosed_by = 'none'
+    skip_header = 1;
+
+
+CREATE OR REPLACE STORAGE integration window_int
+TYPE = EXTERNAL_STAGE
+STORAGE_PROVIDER = S3
+ENABLED = TRUE
+STORAGE_AWS_ROLE_ARN ='arn:aws:iam::588738594772:role/wiindowfunc-dataset-role'
+STORAGE_ALLOWED_LOCATIONS =('s3://datasets-windowfunc-assign/');
+
+DESC integration window_int;
+
+
+CREATE OR REPLACE STAGE WINDOW_FUNC
+URL ='s3://datasets-windowfunc-assign'
+file_format = data_csv
+storage_integration = window_int;
+
+LIST @WINDOW_FUNC;
+
+SHOW STAGES;
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_CUSTOMERS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.CUSTOMERS 
+FROM '@WINDOW_FUNC/datasets/customers.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_SALES AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.SALES 
+FROM '@WINDOW_FUNC/datasets/sales.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_TRANSACTIONS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.TRANSACTIONS 
+FROM '@WINDOW_FUNC/datasets/transactions.csv ' 
+FILE_FORMAT = data_csv;
+
+
+SHOW PIPES;
+
+ALTER PIPE WIN_SNOWPIPE_CUSTOMERS refresh;
+ALTER PIPE WIN_SNOWPIPE_SALES refresh;
+ALTER PIPE WIN_SNOWPIPE_TRANSACTIONS refresh;
+
+
+SELECT count(*) FROM CUSTOMERS;
+SELECT count(*) FROM SALES ;
+SELECT count(*) FROM TRANSACTIONS  ;
+
+SELECT * FROM CUSTOMERS;
+SELECT * FROM SALES;
+SELECT * FROM TRANSACTIONS;
+
+-- 1. Customer and Sales Performance Analysis
+
+/* 
+Business Scenario: You are a business analyst for a retail company. You have multiple datasets: one for customer details, one for product sales, and one for customer transactions. You need to analyze customer behavior and sales performance over time.
+
+Window Functions: ROW_NUMBER(), RANK(), DENSE_RANK(), LAG(), LEAD()
+
+
+Assignment Problem:
+  Task 1: Rank customers based on their total purchase amount per year. Identify the top 5 customers each year and track their ranking over time. (Use RANK())
+*/
+
+SELECT * FROM 
+( SELECT
+  t.transaction_id AS transaction_id,
+  c.customer_name AS customer_name,
+  YEAR(t.transaction_date) AS transaction_year,
+  SUM(t.transaction_amount) AS total_transaction_amt,
+  RANK() OVER (PARTITION BY YEAR(t.transaction_date) ORDER BY SUM(t.transaction_amount) DESC) AS customer_ranking
+FROM  customers c
+INNER JOIN transactions t
+  ON c.customer_id = t.customer_id
+GROUP BY t.transaction_id, c.customer_name, YEAR(t.transaction_date)
+) AS customer_data
+WHERE customer_ranking <= 5;
+
+
+--Task 2: For each customer, get their previous transaction amount and compare it with their current one. (Use LAG())
+
+WITH transaction_data AS (
+    SELECT
+      customer_id,
+      transaction_id,
+      transaction_amount,
+      LAG(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_id) AS previous_transactions
+    FROM transactions
+) 
+    SELECT
+      customer_id,
+      transaction_id,
+      transaction_amount AS current_transactions,
+      previous_transactions,
+      (current_transactions - previous_transactions) AS difference
+    FROM
+      transaction_data;
+
+
+-- Task 3: Calculate the running total of sales for each customer in the last 3 years. (Use SUM() OVER)
+
+
+WITH filtered_sales AS (
+    SELECT
+      customer_id,
+      sale_id,
+      sale_date,
+      sale_amount,
+      YEAR(sale_date) AS sales_year
+    FROM sales
+    WHERE sale_date >= DATEADD(YEAR, -3, CURRENT_DATE)
+)
+    SELECT
+      customer_id,
+      sale_date,
+      sales_year,
+      SUM(sale_amount) OVER (PARTITION BY customer_id ORDER BY sale_date) AS running_total_sales
+    FROM 
+      filtered_sales
+    ORDER BY sales_year, customer_id, sale_date;
+
+
+
+-- Task 4: Divide customers into quartiles based on their total sales per year and analyze their spending patterns. (Use NTILE())
+
+
+WITH yearly_sales AS (
+    SELECT
+        customer_id,
+        YEAR(sale_date) AS sales_year,
+        SUM(sale_amount) AS total_sales_per_year
+    FROM sales
+    GROUP BY customer_id, YEAR(sale_date)
+),
+quartiles AS (
+    SELECT
+        customer_id,
+        sales_year,
+        total_sales_per_year,
+        NTILE(4) OVER (
+            PARTITION BY sales_year 
+            ORDER BY total_sales_per_year DESC
+        ) AS sales_quartile
+    FROM yearly_sales
+)
+SELECT
+    customer_id,
+    sales_year,
+    total_sales_per_year,
+    sales_quartile
+FROM quartiles
+ORDER BY sales_year, sales_quartile, total_sales_per_year DESC;
+
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+/*
+
+2. Employee Performance Evaluation
+•	Business Scenario: You are responsible for evaluating the performance of employees over time for a multinational company. You have datasets for employee details, their monthly evaluations, and their department transfers. You need to track their performance and career progression.
+•	Window Functions: ROW_NUMBER(), DENSE_RANK(), FIRST_VALUE(), LAST_VALUE()
+
+Tables:
+•	employees (Employee Information)
+•	evaluations (Monthly Employee Evaluation Scores)
+•	departments (Department Transfer History)
+
+*/
+
+---DDL For Tables:
+
+-- Employees Table
+CREATE OR REPLACE TABLE employees (
+    employee_id INT PRIMARY KEY,
+    employee_name VARCHAR(255),
+    hire_date DATE,
+    current_department VARCHAR(100)
+);
+
+
+-- Evaluations Table
+CREATE OR REPLACE TABLE evaluations (
+    evaluation_id INT PRIMARY KEY,
+    employee_id INT REFERENCES employees(employee_id),
+    evaluation_month DATE,
+    evaluation_score DECIMAL(5, 2)
+);
+
+-- Departments Table
+CREATE OR REPLACE TABLE departments (
+    department_id INT PRIMARY KEY,
+    department_name VARCHAR(100),
+    employee_id INT REFERENCES employees(employee_id),
+    transfer_date DATE
+);
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_EMPLOYESS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.EMPLOYEES 
+FROM '@WINDOW_FUNC/datasets/employees.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_EVALUATIONS  AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.EVALUATIONS 
+FROM '@WINDOW_FUNC/datasets/evaluations.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_DEPARTMENTS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.DEPARTMENTS 
+FROM '@WINDOW_FUNC/datasets/departments.csv' 
+FILE_FORMAT = data_csv;
+
+
+SHOW PIPES;
+
+ALTER PIPE WIN_SNOWPIPE_EMPLOYESS refresh;
+ALTER PIPE WIN_SNOWPIPE_EVALUATIONS refresh;
+ALTER PIPE WIN_SNOWPIPE_DEPARTMENTS refresh;
+
+
+SELECT count(*) FROM EMPLOYEES;
+SELECT count(*) FROM EVALUATIONS;
+SELECT count(*) FROM DEPARTMENTS;
+
+SELECT * FROM EMPLOYEES;
+SELECT * FROM EVALUATIONS;
+SELECT * FROM DEPARTMENTS;
+
+
+--Assignment Problem:
+--Task 1: Track the rank of employees in terms of monthly evaluation scores within each department for the last 3 years. (Use DENSE_RANK())
+
+WITH employee_evaluation AS (
+SELECT
+  e.employee_id,
+  e.employee_name,
+  d.department_id,
+  d.department_name,
+  v.evaluation_score,
+  YEAR(v.evaluation_month) AS evaluation_year
+FROM employees e
+INNER JOIN evaluations v
+  ON e.employee_id = v.employee_id
+INNER JOIN departments d
+  ON e.employee_id = d.employee_id
+WHERE v.evaluation_month >= DATEADD(YEAR, -3, CURRENT_DATE) 
+)
+SELECT *,
+  DENSE_RANK() OVER (PARTITION BY ee.department_name, ee.evaluation_year ORDER BY ee.evaluation_score DESC) AS employee_rank
+FROM 
+  employee_evaluation ee
+  
+
+--Task 2: Identify employees whose performance improved consistently over the last 6 months by comparing their current evaluation with their previous ones. (Use LAG())
+
+
+WITH employee_evaluation AS (
+SELECT
+  e.employee_id,
+  e.employee_name,
+  v.evaluation_score AS current_employee_eval_score,
+  MONTH(v.evaluation_month) AS evaluation_monthh
+FROM employees e
+INNER JOIN evaluations v
+  ON e.employee_id = v.employee_id
+WHERE v.evaluation_month >= DATEADD(MONTH, -6, CURRENT_DATE) 
+)
+    SELECT *,
+      (current_employee_eval_score - previous_employee_eval_score ) AS preformance
+    FROM
+(
+    SELECT *,
+      LAG(current_employee_eval_score) OVER (PARTITION BY ee.employee_id ORDER BY ee.evaluation_monthh DESC) AS previous_employee_eval_score
+    FROM 
+      employee_evaluation ee
+)
+       AS employee_score;
+
+
+-- Task 3: Find the first department each employee joined and their current department. (Use FIRST_VALUE(), LAST_VALUE())
+
+SELECT
+    e.employee_id,
+    e.employee_name,
+    FIRST_VALUE(d.department_name) OVER (PARTITION BY e.employee_id ORDER BY d.transfer_date) AS first_department,
+    LAST_VALUE(d.department_name) OVER (PARTITION BY e.employee_id ORDER BY d.transfer_date ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS current_department,
+    FIRST_VALUE(d.transfer_date) OVER (PARTITION BY e.employee_id ORDER BY d.transfer_date) AS first_transfer_date,
+    d.transfer_date AS last_transfer_date
+FROM employees e
+INNER JOIN departments d
+    ON e.employee_id = d.employee_id;
+
+    
+--Task 4: Calculate the cumulative average evaluation score of each employee over the years. (Use AVG() OVER)
+
+SELECT
+  e.employee_id,
+  e.employee_name,
+  YEAR(v.evaluation_month) AS evaluation_year,
+  avg(v.evaluation_score) OVER (PARTITION BY e.employee_id ORDER BY YEAR(v.evaluation_month) ) AS avg_eval_score
+FROM employees e
+INNER JOIN evaluations v
+  ON e.employee_id = v.employee_id;
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+/*
+3. Product Pricing and Sales Trends
+
+
+•	Business Scenario: You are tasked with analyzing product pricing trends and their impact on sales. You have datasets for product prices, sales transactions, and promotions. The company wants to understand how price changes and promotions affect product sales.
+•	Window Functions: LEAD(), LAG(), SUM() OVER, MAX() OVER
+
+Tables:
+•	products (Product Information)
+•	prices (Product Pricing History)
+•	promotions (Promotional Events)
+•	sales (Sales Transactions Data)
+*/
+
+
+--DDL For Tables:
+
+-- Products Table
+CREATE OR REPLACE TABLE products (
+    product_id VARCHAR(50) PRIMARY KEY,
+    product_name VARCHAR(255),
+    category VARCHAR(100)
+);
+
+-- Prices Table
+CREATE OR REPLACE TABLE prices (
+    price_id INT PRIMARY KEY,
+    product_id VARCHAR(50) REFERENCES products(product_id),
+    price DECIMAL(10, 2),
+    price_date DATE
+);
+
+-- Promotions Table
+CREATE OR REPLACE TABLE promotions (
+    promotion_id INT PRIMARY KEY,
+    product_id VARCHAR(50) REFERENCES products(product_id),
+    discount DECIMAL(5, 2),
+    start_date DATE,
+    end_date DATE
+);
+
+-- Sales Table
+CREATE OR REPLACE TABLE saless (
+    sale_id INT PRIMARY KEY,
+    product_id VARCHAR(50) REFERENCES products(product_id),
+    sale_date DATE,
+    total_amount DECIMAL(10, 2)
+);
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_PRODUCTS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.PRODUCTS 
+FROM '@WINDOW_FUNC/datasets/products.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_PRICES  AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.PRICES 
+FROM '@WINDOW_FUNC/datasets/price.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_PROMOTIONS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.PROMOTIONS 
+FROM '@WINDOW_FUNC/datasets/promotion.csv' 
+FILE_FORMAT = data_csv;
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_SALESS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.SALESS 
+FROM '@WINDOW_FUNC/datasets/saless.csv' 
+FILE_FORMAT = data_csv;
+
+SHOW PIPES;
+
+ALTER PIPE WIN_SNOWPIPE_PRODUCTS refresh;
+ALTER PIPE WIN_SNOWPIPE_PROMOTIONS refresh;
+ALTER PIPE WIN_SNOWPIPE_PRICES refresh;
+
+ALTER PIPE WIN_SNOWPIPE_SALESS refresh;
+
+
+SELECT count(*) FROM PRODUCTS;
+SELECT count(*) FROM PRICES;
+SELECT count(*) FROM PROMOTIONS;
+SELECT count(*) FROM SALESS;
+
+
+SELECT * FROM PRODUCTS;
+SELECT * FROM PRICES;
+SELECT * FROM PROMOTIONS;
+SELECT * FROM SALESS;
+
+
+--Assignment Problem:
+-- Task 1: For each product, compare the current price with the previous price and the next price, and analyze how price changes affect sales. (Use LAG(), LEAD())
+
+
+SELECT
+    p.product_id,
+    p.price_id,
+    p.price_date,
+    p.price AS current_price,
+    LAG(p.price) OVER (PARTITION BY p.product_id ORDER BY p.price_date) AS previous_price,
+    LEAD(p.price) OVER (PARTITION BY p.product_id ORDER BY p.price_date) AS next_price,
+    s.sale_date,
+    s.total_amount AS current_sale_price,
+    LAG(s.total_amount) OVER (PARTITION BY s.product_id ORDER BY s.sale_date) AS previous_sale_price,
+    LEAD(s.total_amount) OVER (PARTITION BY s.product_id ORDER BY s.sale_date) AS next_sale_price
+FROM prices p
+LEFT JOIN saless s
+    ON p.product_id = s.product_id;
+
+
+-- Task 2: Calculate the cumulative sales for each product per month over the last 2 years. (Use SUM() OVER)
+
+WITH sales_data AS (
+SELECT
+  product_id,
+  EXTRACT(YEAR FROM sale_date) AS sale_year,
+  EXTRACT(MONTH FROM sale_date) AS sale_month,
+  total_amount
+FROM
+  saless
+WHERE sale_date >= DATEADD(YEAR, -2, CURRENT_DATE)
+)
+  SELECT 
+    product_id,
+    sale_year,
+    sale_month,
+    SUM(total_amount) OVER (PARTITION BY product_id ORDER BY sale_year,sale_month) AS total_sales
+  FROM 
+    sales_data
+  ORDER BY product_id, sale_year, sale_month;
+
+
+
+-- Task 3: Find the maximum price each product has ever been sold at and compare it to the current price. (Use MAX() OVER)
+
+
+SELECT
+    product_id,
+    total_amount AS current_sale_price,
+    MAX(total_amount) OVER (PARTITION BY product_id) AS max_sale_price
+FROM saless;
+
+
+-- Task 4: Identify products that had promotional discounts and track their sales before, during, and after the promotion. (Use LAG(), LEAD())
+
+
+SELECT *,
+  (sales_before_disc - discount) AS sales_after_disc
+FROM (
+    SELECT
+      p.product_id,
+      s.total_amount AS sales_before_disc,
+      p.discount AS discount
+    FROM promotions p
+    INNER JOIN saless s
+      ON p.product_id = s.product_id
+   ) 
+    AS discount_data;
+
+
+---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+
+/*
+4. Financial Transaction Monitoring
+•	Business Scenario: You are working for a bank, and you need to monitor large-scale transactions for suspicious activities. You have datasets for customer details, account transactions, and suspicious activities flagged by the system. The goal is to track financial behavior over time and detect irregularities.
+•	Window Functions: SUM() OVER, NTILE(), FIRST_VALUE(), LAST_VALUE()
+
+Tables:
+•	customers (Bank Customer Information)
+•	accounts (Bank Accounts)
+•	transactions (Transaction Data)
+•	suspicious_activities (Flagged Suspicious Activities)
+*/
+
+-- DDL for Tables:
+
+-- Customers Table
+CREATE OR REPLACE TABLE customerss (
+    customer_id INT PRIMARY KEY,
+    customer_name VARCHAR(255),
+    region VARCHAR(100),
+    join_date DATE
+);
+
+-- Accounts Table
+CREATE OR REPLACE TABLE accounts (
+    account_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    account_type VARCHAR(100),
+    balance DECIMAL(15, 2),
+    opened_date DATE
+);
+
+-- Transactions Table
+CREATE OR REPLACE TABLE transactionss (
+    transaction_id INT PRIMARY KEY,
+    customer_id INT REFERENCES customers(customer_id),
+    transaction_date DATE,
+    transaction_amount DECIMAL(15, 2)
+);
+
+
+-- Suspicious Activities Table
+CREATE OR REPLACE TABLE suspicious_activities (
+    activity_id INT PRIMARY KEY,
+    transaction_id INT REFERENCES transactions(transaction_id),
+    flagged_reason VARCHAR(255),
+    flagged_date DATE
+);
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_CUSTOMERSS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.CUSTOMERSS 
+FROM '@WINDOW_FUNC/datasets/customers.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_ACCOUNTS  AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.ACCOUNTS 
+FROM '@WINDOW_FUNC/datasets/accounts.csv' 
+FILE_FORMAT = data_csv;
+
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_TRANSACTIONSS AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.TRANSACTIONSS 
+FROM '@WINDOW_FUNC/datasets/transactions.csv' 
+FILE_FORMAT = data_csv;
+
+CREATE OR REPLACE PIPE WIN_SNOWPIPE_SUSPICIOUS_ACTIVITIES  AUTO_INGEST = TRUE AS
+COPY INTO DATA_INSIGHTS.ANALYSIS.SUSPICIOUS_ACTIVITIES 
+FROM '@WINDOW_FUNC/datasets/sus_activites.csv' 
+FILE_FORMAT = data_csv;
+
+SHOW PIPES;
+
+ALTER PIPE WIN_SNOWPIPE_CUSTOMERSS refresh;
+ALTER PIPE WIN_SNOWPIPE_ACCOUNTS refresh;
+ALTER PIPE WIN_SNOWPIPE_TRANSACTIONSS refresh;
+ALTER PIPE WIN_SNOWPIPE_SUSPICIOUS_ACTIVITIES refresh;
+
+
+SELECT count(*) FROM CUSTOMERSS;
+SELECT count(*) FROM ACCOUNTS;
+SELECT count(*) FROM TRANSACTIONSS;
+SELECT count(*) FROM SUSPICIOUS_ACTIVITIES;
+
+
+SELECT * FROM CUSTOMERSS;
+SELECT * FROM ACCOUNTS;
+SELECT * FROM TRANSACTIONSS;
+SELECT * FROM SUSPICIOUS_ACTIVITIES;
+
+
+-- Task 1: Calculate the cumulative sum of transactions for each customer in the last 2 years and flag customers whose transactions exceed a threshold. (Use SUM() OVER)
+
+WITH transaction_data AS (
+SELECT
+  customer_id,
+  transaction_id,
+  YEAR(transaction_date) AS transaction_year,
+  transaction_amount
+FROM
+  transactionss
+WHERE transaction_date >= DATEADD(YEAR, -2, CURRENT_DATE)
+),
+flag_filter AS (
+   SELECT DISTINCT
+      customer_id,
+      transaction_year,
+      SUM(transaction_amount) OVER (PARTITION BY customer_id) AS total_transaction
+    FROM transaction_data
+    ORDER BY customer_id,transaction_year,total_transaction
+)
+SELECT 
+  customer_id,
+  transaction_year,
+  total_transaction,
+  CASE 
+    WHEN total_transaction > 3000 THEN 'red flag'
+    ELSE 'ok'
+  END AS threshold_transaction
+FROM
+  flag_filter
+ORDER BY customer_id, transaction_year;
+
+
+
+-- Task 2: Divide customers into deciles (10 groups) based on their total transactions and analyze which decile is most prone to suspicious activity. (Use NTILE())
+
+WITH CustomerTransactionTotals AS (
+    SELECT
+        t.customer_id,
+        SUM(t.transaction_amount) AS total_transaction_amount
+    FROM transactionss t
+    GROUP BY t.customer_id
+),
+CustomerDeciles AS (
+    SELECT
+        customer_id,
+        total_transaction_amount,
+        NTILE(10) OVER (ORDER BY total_transaction_amount DESC) AS decile
+    FROM CustomerTransactionTotals
+)
+SELECT
+    cd.decile,
+    COUNT(sa.activity_id) AS suspicious_activity_count
+FROM CustomerDeciles cd
+LEFT JOIN transactionss t
+    ON cd.customer_id = t.customer_id
+LEFT JOIN suspicious_activities sa
+    ON t.transaction_id = sa.transaction_id
+GROUP BY cd.decile
+ORDER BY cd.decile;
+
+
+
+-- Task 3: Track the first and last large transaction for each customer in the past 4 years. (Use FIRST_VALUE(), LAST_VALUE())
+
+WITH customer_transaction AS (
+SELECT
+  customer_id,
+  transaction_id,
+  transaction_amount,
+  YEAR(transaction_date) AS transaction_year
+FROM
+  transactionss
+WHERE transaction_date >= DATEADD(YEAR, -4, CURRENT_DATE)
+)
+SELECT
+  customer_id,
+  transaction_id,
+  transaction_amount,
+  transaction_year,
+  first_value(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_amount DESC) AS first_large_transaction,
+  last_value(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_amount DESC) AS last_large_transaction
+FROM
+  customer_transaction
+ORDER BY customer_id, transaction_amount DESC;
+
+
+-- Task 4: Compare each customer’s current transaction with their previous one to detect sudden increases in transaction amounts. (Use LAG())
+
+SELECT *, 
+  (current_transaction - previous_transaction) As increase_transaction_amt
+FROM
+(
+   SELECT
+     customer_id,
+     transaction_id,
+     transaction_amount AS current_transaction,
+     LAG(transaction_amount) OVER (PARTITION BY customer_id ORDER BY transaction_id) AS previous_transaction
+   FROM
+     transactionss
+) 
+AS transaction_flaucation;
