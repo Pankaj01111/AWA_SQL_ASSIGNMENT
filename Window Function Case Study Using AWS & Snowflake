@@ -3,6 +3,13 @@ CREATE SCHEMA analysis
 USE DATA_INSIGHTS.ANALYSIS
 
 
+-- 1. Customer and Sales Performance Analysis
+/* 
+Business Scenario: You are a business analyst for a retail company. You have multiple datasets: one for customer details, one for product sales, and one for customer transactions. You need to analyze customer behavior and sales performance over time.
+
+Window Functions: ROW_NUMBER(), RANK(), DENSE_RANK(), LAG(), LEAD()
+*/
+
 CREATE OR REPLACE TABLE customers (
     customer_id INT PRIMARY KEY,
     customer_name VARCHAR(255),
@@ -87,12 +94,6 @@ SELECT * FROM CUSTOMERS;
 SELECT * FROM SALES;
 SELECT * FROM TRANSACTIONS;
 
--- 1. Customer and Sales Performance Analysis
-
-/* 
-Business Scenario: You are a business analyst for a retail company. You have multiple datasets: one for customer details, one for product sales, and one for customer transactions. You need to analyze customer behavior and sales performance over time.
-
-Window Functions: ROW_NUMBER(), RANK(), DENSE_RANK(), LAG(), LEAD()
 
 
 Assignment Problem:
